@@ -1,0 +1,15 @@
+[tool.poetry]
+name = "emgonset"
+version = "0.1.0"
+description = ""
+authors = ["Jesús Peñaloza <jesus.penalozaa@ufl.edu>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+neo = "^0.13.3"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
