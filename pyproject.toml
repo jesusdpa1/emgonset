@@ -8,8 +8,16 @@ readme = "README.md"
 [tool.poetry.dependencies]
 python = "^3.12"
 neo = "^0.13.3"
+matplotlib = "^3.9.2"
+ipykernel = "^6.29.5"
+scipy = "^1.14.1"
+librosa = "^0.10.2.post1"
 
 
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.group.dev.dependencies]
+black = "^23.12"
+python-lsp-ruff = "^2.1"
