@@ -12,6 +12,9 @@ matplotlib = "^3.9.2"
 ipykernel = "^6.29.5"
 scipy = "^1.14.1"
 librosa = "^0.10.2.post1"
+spikeinterface = {extras = ["full", "widgets"], version = "^0.101.2"}
+pywavelets = "^1.7.0"
+ssqueezepy = "^0.6.5"
 
 
 [build-system]
