@@ -12,20 +12,6 @@ EMGOnset is a comprehensive toolkit for processing electromyography (EMG) signal
 - Machine learning models for robust onset/offset detection
 - Evaluation and visualization of detection performance
 
-## Installation
-
-```bash
-pip install emgonset
-```
-
-Or install from source:
-
-```bash
-git clone https://github.com/yourusername/emgonset.git
-cd emgonset
-pip install -e .
-```
-
 ## Features
 
 ### Data Loading and Preprocessing
@@ -48,58 +34,6 @@ pip install -e .
 - Feature-based machine learning models
 - Deep learning approaches for adaptive detection
 - Ensemble methods for improved robustness
-
-## Quick Start
-
-Here's a simple example of how to use EMGOnset:
-
-```python
-import torch
-from emgonset.processing.filters import create_bandpass_filter, create_notch_filter, create_emg_filter
-from emgonset.processing.rectifiers import create_abs_rectifier
-from emgonset.processing.tkeo import create_tkeo
-from emgonset.processing.transforms import EMGTransformCompose
-from emgonset.utils.io import create_emg_dataloader
-
-# Create a processing pipeline
-transform = EMGTransformCompose([
-    create_emg_filter([
-        create_notch_filter(notch_freq=60),
-        create_bandpass_filter(low_cutoff=20, high_cutoff=2000)
-    ]),
-    create_abs_rectifier(),
-    create_tkeo()
-])
-
-# Load EMG data
-dataloader, fs = create_emg_dataloader(
-    data_dir="path/to/data",
-    window_size_sec=1.0,
-    window_stride_sec=0.5,
-    batch_size=32,
-    transform=transform,
-    num_workers=0,
-    shuffle=False
-)
-
-# Simple visualization
-import matplotlib.pyplot as plt
-import numpy as np
-
-# Get a batch of data
-batch = next(iter(dataloader))
-sample = batch[0]  # First sample in batch
-
-# Plot original and processed signals
-plt.figure(figsize=(12, 6))
-time = np.linspace(0, sample.shape[1]/fs, sample.shape[1])
-for i in range(sample.shape[0]):
-    plt.plot(time, sample[i].numpy(), label=f'Channel {i+1}')
-plt.xlabel('Time (s)')
-plt.ylabel('Amplitude')
-plt.legend()
-plt.show()
-```
 
 ## Project Structure
 
