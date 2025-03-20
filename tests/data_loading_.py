@@ -13,6 +13,7 @@ from scipy import signal
 from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
 
+from emgonset.processing.envelope import create_lowpass_envelope, create_tkeo_envelope
 from emgonset.processing.filters import (
     create_bandpass_filter,
     create_emg_filter,
@@ -28,8 +29,7 @@ from emgonset.vizualization.general_plots import plot_time_series
 base_dir = Path(r"E:/jpenalozaa")
 data_dir = base_dir.joinpath(r"onset_detection\00_")
 
-# Create the filter pipeline without initializing yet
-# These filter functions will be initialized when the dataset is created
+# Create filters with default padding (100ms)
 emg_filter = create_emg_filter(
     [
         create_notch_filter(notch_freq=60),
@@ -37,27 +37,22 @@ emg_filter = create_emg_filter(
     ]
 )
 
-# Create a rectifier
-rectifier = create_abs_rectifier()
-
-# TKEO2 (4-sample)
-transform = EMGTransformCompose(
-    [
-        emg_filter,
-        create_abs_rectifier(),
-        create_tkeo2(),  # 4-sample TKEO
-    ]
+# Create envelope detector with default padding
+envelope = create_tkeo_envelope(
+    tkeo_type="tkeo2", rectification="abs", lowpass_cutoff=20
 )
 
+# Combine them in a pipeline
+transform = EMGTransformCompose([emg_filter, envelope])
 
-# The dataset will initialize all filters with the correct fs
+# Then depending on what you need:
 dataloader, fs = create_emg_dataloader(
     data_dir=data_dir,
     window_size_sec=5.0,
     window_stride_sec=0.5,
     batch_size=32,
     channels=[0, 1],
-    transform=transform,
+    transform=transform,  # Use base_transform for raw filtered data
     num_workers=0,
     shuffle=False,
 )
