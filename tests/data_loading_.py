@@ -22,6 +22,7 @@ from emgonset.processing.rectifiers import create_abs_rectifier
 from emgonset.processing.tkeo import create_tkeo2
 from emgonset.processing.transforms import EMGTransformCompose
 from emgonset.utils.io import create_emg_dataloader  # Corrected import
+from emgonset.vizualization.general_plots import plot_time_series
 
 # %%
 base_dir = Path(r"E:/jpenalozaa")
@@ -87,6 +88,14 @@ import numpy as np
 # The shape is [batch_size, channels, samples]
 segment = batch[0]  # Shape should be [2, 24414]
 
+a = plot_time_series(
+    data=batch[0],  # First sample from batch
+    fs=fs,
+    title="EMG Recording",
+    dark_mode=True,
+    grid=True,
+)
+# %%
 # Create time vector in seconds
 time_ = np.linspace(0, segment.shape[1] / fs, segment.shape[1])
 
