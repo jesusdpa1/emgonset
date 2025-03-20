@@ -18,6 +18,9 @@ from emgonset.processing.filters import (
     create_emg_filter,
     create_notch_filter,
 )
+from emgonset.processing.rectifiers import create_abs_rectifier
+from emgonset.processing.tkeo import create_tkeo2
+from emgonset.processing.transforms import EMGTransformCompose
 from emgonset.utils.io import create_emg_dataloader  # Corrected import
 
 # %%
@@ -26,12 +29,25 @@ data_dir = base_dir.joinpath(r"onset_detection\00_")
 
 # Create the filter pipeline without initializing yet
 # These filter functions will be initialized when the dataset is created
-filter_pipeline = create_emg_filter(
-    filters=[
-        create_notch_filter(notch_freq=60),  # Now works without fs
+emg_filter = create_emg_filter(
+    [
+        create_notch_filter(notch_freq=60),
         create_bandpass_filter(low_cutoff=20, high_cutoff=2000),
     ]
 )
+
+# Create a rectifier
+rectifier = create_abs_rectifier()
+
+# TKEO2 (4-sample)
+transform = EMGTransformCompose(
+    [
+        emg_filter,
+        create_abs_rectifier(),
+        create_tkeo2(),  # 4-sample TKEO
+    ]
+)
+
 
 # The dataset will initialize all filters with the correct fs
 dataloader, fs = create_emg_dataloader(
@@ -40,7 +56,7 @@ dataloader, fs = create_emg_dataloader(
     window_stride_sec=0.5,
     batch_size=32,
     channels=[0, 1],
-    transform=filter_pipeline,
+    transform=transform,
     num_workers=0,
     shuffle=False,
 )
