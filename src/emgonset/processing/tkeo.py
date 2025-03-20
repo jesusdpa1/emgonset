@@ -3,6 +3,7 @@ from typing import Optional
 
 import numpy as np
 import torch
+from numba import njit
 
 from ..utils.internals import public_api
 
@@ -23,6 +24,70 @@ class BaseTKEO(ABC):
     def __call__(self, tensor: torch.Tensor) -> torch.Tensor:
         """Apply TKEO to signal tensor"""
         pass
+
+
+# Define Numba accelerated functions for each TKEO variant
+@njit
+def _tkeo_operation(signal):
+    """Numba accelerated implementation of classic TKEO"""
+    result = np.zeros_like(signal)
+    if len(signal) > 2:
+        # Calculate central part: x[n]² - x[n-1] * x[n+1]
+        inner_result = signal[1:-1] ** 2 - signal[:-2] * signal[2:]
+
+        # Pad result to maintain original length
+        result[1:-1] = inner_result
+        if len(inner_result) > 0:
+            result[0] = inner_result[0]
+            result[-1] = inner_result[-1]
+
+    return result
+
+
+@njit
+def _tkeo2_operation(signal):
+    """Numba accelerated implementation of TKEO2"""
+    result = np.zeros_like(signal)
+    if len(signal) > 3:
+        # Parameters for indexing
+        l, p, q, s = 1, 2, 0, 3
+
+        # Calculate x[n+1] * x[n+2] - x[n] * x[n+3]
+        inner_result = signal[l:-p] * signal[p:-l] - signal[q:-s] * signal[s:]
+
+        # Pad result to maintain original length
+        result[l:-p] = inner_result
+        if len(inner_result) > 0:
+            result[:l] = inner_result[0]
+            result[-p:] = inner_result[-1]
+
+    return result
+
+
+@njit
+def _mtkeo_operation(signal, k1, k2, k3):
+    """Numba accelerated implementation of MTKEO"""
+    result = np.zeros_like(signal)
+    if len(signal) > 5:
+        # Standard TKEO: x[n]^2 - x[n-1]*x[n+1]
+        tkeo = signal[2:-2] ** 2 - signal[1:-3] * signal[3:-1]
+
+        # TKEO with delay 2: x[n]^2 - x[n-2]*x[n+2]
+        tkeo1 = signal[2:-2] ** 2 - signal[0:-4] * signal[4:]
+
+        # TKEO with delay 3: x[n-1]*x[n+1] - x[n-2]*x[n+2]
+        tkeo2 = signal[1:-3] * signal[3:-1] - signal[0:-4] * signal[4:]
+
+        # Combine with weights
+        inner_result = k1 * tkeo + k2 * tkeo1 + k3 * tkeo2
+
+        # Pad result to maintain original length
+        result[2:-2] = inner_result
+        if len(inner_result) > 0:
+            result[:2] = inner_result[0]
+            result[-2:] = inner_result[-1]
+
+    return result
 
 
 @public_api
@@ -49,17 +114,15 @@ class TKEO(BaseTKEO):
 
         for ch in range(tensor.shape[0]):
             # Get signal for this channel
-            signal = tensor[ch]
+            signal = tensor[ch].detach().cpu().numpy()
 
-            # Calculate central part of TKEO
-            # x[n]² - x[n-1] * x[n+1]
-            inner_result = signal[1:-1] ** 2 - signal[:-2] * signal[2:]
+            # Apply Numba-accelerated TKEO
+            channel_result = _tkeo_operation(signal)
 
-            # Pad result to maintain original length (replicate edge values)
-            result[ch, 1:-1] = inner_result
-            if len(inner_result) > 0:
-                result[ch, 0] = inner_result[0]
-                result[ch, -1] = inner_result[-1]
+            # Convert back to tensor
+            result[ch] = torch.tensor(
+                channel_result, dtype=tensor.dtype, device=tensor.device
+            )
 
         return result
 
@@ -88,21 +151,15 @@ class TKEO2(BaseTKEO):
 
         for ch in range(tensor.shape[0]):
             # Get signal for this channel
-            signal = tensor[ch]
+            signal = tensor[ch].detach().cpu().numpy()
 
-            # TKEO2 parameters
-            l, p, q, s = 1, 2, 0, 3
+            # Apply Numba-accelerated TKEO2
+            channel_result = _tkeo2_operation(signal)
 
-            # Only calculate if we have enough samples
-            if signal.shape[0] > 3:
-                # Calculate x[n+1] * x[n+2] - x[n] * x[n+3]
-                inner_result = signal[l:-p] * signal[p:-l] - signal[q:-s] * signal[s:]
-
-                # Pad result to maintain original length
-                result[ch, l:-p] = inner_result
-                if len(inner_result) > 0:
-                    result[ch, :l] = inner_result[0]
-                    result[ch, -p:] = inner_result[-1]
+            # Convert back to tensor
+            result[ch] = torch.tensor(
+                channel_result, dtype=tensor.dtype, device=tensor.device
+            )
 
         return result
 
@@ -150,36 +207,20 @@ class MTKEO(BaseTKEO):
 
         for ch in range(tensor.shape[0]):
             # Get signal for this channel
-            signal = tensor[ch]
+            signal = tensor[ch].detach().cpu().numpy()
 
-            # Only calculate if we have enough samples
-            if signal.shape[0] < 6:
-                continue
+            # Apply Numba-accelerated MTKEO
+            channel_result = _mtkeo_operation(signal, self.k1, self.k2, self.k3)
 
-            # Standard TKEO: x[n]^2 - x[n-1]*x[n+1]
-            tkeo = signal[2:-2] ** 2 - signal[1:-3] * signal[3:-1]
-
-            # TKEO with delay 2: x[n]^2 - x[n-2]*x[n+2]
-            tkeo1 = signal[2:-2] ** 2 - signal[0:-4] * signal[4:]
-
-            # TKEO with delay 3: x[n-1]*x[n+1] - x[n-2]*x[n+2]
-            tkeo2 = signal[1:-3] * signal[3:-1] - signal[0:-4] * signal[4:]
-
-            # Combine the three operators with weights
-            inner_result = self.k1 * tkeo + self.k2 * tkeo1 + self.k3 * tkeo2
-
-            # Pad result to maintain original length
-            result[ch, 2:-2] = inner_result
-            if len(inner_result) > 0:
-                result[ch, :2] = inner_result[0]
-                result[ch, -2:] = inner_result[-1]
+            # Convert back to tensor
+            result[ch] = torch.tensor(
+                channel_result, dtype=tensor.dtype, device=tensor.device
+            )
 
         return result
 
 
-# Factory functions
-
-
+# Factory functions remain the same
 @public_api
 def create_tkeo() -> TKEO:
     """Create a classic TKEO transform"""

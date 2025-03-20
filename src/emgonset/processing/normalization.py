@@ -8,9 +8,105 @@ from typing import Optional, Tuple, Union
 
 import numpy as np
 import torch
+from numba import njit, prange
 from scipy import signal
 
 from ..utils.internals import public_api
+
+
+# Numba-optimized normalization functions
+@njit
+def _minmax_normalize(data, target_min, target_max):
+    """Numba-accelerated min-max normalization"""
+    result = np.zeros_like(data)
+
+    min_val = np.min(data)
+    max_val = np.max(data)
+
+    if max_val > min_val:
+        # Scale to [0, 1] first
+        normalized = (data - min_val) / (max_val - min_val)
+        # Then scale to target range
+        result = normalized * (target_max - target_min) + target_min
+    else:
+        # If all values are the same, set to target_min
+        result.fill(target_min)
+
+    return result
+
+
+@njit
+def _zscore_normalize(data, eps):
+    """Numba-accelerated z-score normalization"""
+    result = np.zeros_like(data)
+
+    mean_val = np.mean(data)
+    std_val = np.std(data)
+
+    if std_val > 0:
+        result = (data - mean_val) / (std_val + eps)
+    else:
+        # If std is zero, just subtract mean
+        result = data - mean_val
+
+    return result
+
+
+@njit
+def _unit_length_normalize(data, eps):
+    """Numba-accelerated unit length normalization"""
+    result = np.zeros_like(data)
+
+    # Calculate L2 norm
+    norm = np.sqrt(np.sum(data**2))
+
+    if norm > 0:
+        result = data / (norm + eps)
+    else:
+        result = data.copy()
+
+    return result
+
+
+@njit
+def _max_amplitude_normalize(data, scale, eps):
+    """Numba-accelerated max amplitude normalization"""
+    result = np.zeros_like(data)
+
+    # Calculate max absolute value
+    max_abs = np.max(np.abs(data))
+
+    if max_abs > 0:
+        result = (data / (max_abs + eps)) * scale
+    else:
+        result = data.copy()
+
+    return result
+
+
+# For robust scale normalization, we can't use pure Numba because of percentile
+def _robust_scale_normalize(data, eps):
+    """Hybrid implementation of robust scale normalization"""
+    median = np.median(data)
+    q1 = np.percentile(data, 25)
+    q3 = np.percentile(data, 75)
+    iqr = q3 - q1
+
+    # Then use numba for the actual normalization
+    return _apply_robust_norm(data, median, iqr, eps)
+
+
+@njit
+def _apply_robust_norm(data, median, iqr, eps):
+    """Numba-accelerated part of robust normalization"""
+    result = np.zeros_like(data)
+
+    if iqr > 0:
+        result = (data - median) / (iqr + eps)
+    else:
+        result = data - median
+
+    return result
 
 
 class BaseNormalizer(ABC):
@@ -65,26 +161,18 @@ class MinMaxNormalizer(BaseNormalizer):
         result = torch.zeros_like(tensor)
 
         for ch in range(tensor.shape[0]):
-            channel_data = tensor[ch]
+            # Get channel data as numpy array
+            channel_data = tensor[ch].detach().cpu().numpy()
 
-            # Calculate min and max
-            min_val = torch.min(channel_data)
-            max_val = torch.max(channel_data)
+            # Apply Numba-accelerated normalization
+            norm_data = _minmax_normalize(
+                channel_data, self.target_min, self.target_max
+            )
 
-            # Avoid division by zero
-            if max_val > min_val:
-                # Scale to [0, 1] first
-                normalized = (channel_data - min_val) / (max_val - min_val)
-
-                # Then scale to target range
-                normalized = (
-                    normalized * (self.target_max - self.target_min) + self.target_min
-                )
-
-                result[ch] = normalized
-            else:
-                # If all values are the same, set to target_min
-                result[ch] = torch.ones_like(channel_data) * self.target_min
+            # Convert back to tensor
+            result[ch] = torch.tensor(
+                norm_data, dtype=tensor.dtype, device=tensor.device
+            )
 
         return result
 
@@ -121,18 +209,16 @@ class ZScoreNormalizer(BaseNormalizer):
         result = torch.zeros_like(tensor)
 
         for ch in range(tensor.shape[0]):
-            channel_data = tensor[ch]
+            # Get channel data as numpy array
+            channel_data = tensor[ch].detach().cpu().numpy()
 
-            # Calculate mean and standard deviation
-            mean_val = torch.mean(channel_data)
-            std_val = torch.std(channel_data)
+            # Apply Numba-accelerated normalization
+            norm_data = _zscore_normalize(channel_data, self.eps)
 
-            # Avoid division by zero
-            if std_val > 0:
-                result[ch] = (channel_data - mean_val) / (std_val + self.eps)
-            else:
-                # If std is zero, just subtract mean
-                result[ch] = channel_data - mean_val
+            # Convert back to tensor
+            result[ch] = torch.tensor(
+                norm_data, dtype=tensor.dtype, device=tensor.device
+            )
 
         return result
 
@@ -169,24 +255,16 @@ class RobustScaleNormalizer(BaseNormalizer):
         result = torch.zeros_like(tensor)
 
         for ch in range(tensor.shape[0]):
-            channel_data = tensor[ch]
+            # Get channel data as numpy array
+            channel_data = tensor[ch].detach().cpu().numpy()
 
-            # Convert to numpy for quantile calculation
-            np_data = channel_data.detach().cpu().numpy()
+            # Apply hybrid normalization (part NumPy, part Numba)
+            norm_data = _robust_scale_normalize(channel_data, self.eps)
 
-            # Calculate median and IQR
-            median = np.median(np_data)
-            q1 = np.percentile(np_data, 25)
-            q3 = np.percentile(np_data, 75)
-            iqr = q3 - q1
-
-            # Avoid division by zero
-            if iqr > 0:
-                # Apply normalization
-                result[ch] = (channel_data - median) / (iqr + self.eps)
-            else:
-                # If IQR is zero, just subtract median
-                result[ch] = channel_data - median
+            # Convert back to tensor
+            result[ch] = torch.tensor(
+                norm_data, dtype=tensor.dtype, device=tensor.device
+            )
 
         return result
 
@@ -223,16 +301,16 @@ class UnitLengthNormalizer(BaseNormalizer):
         result = torch.zeros_like(tensor)
 
         for ch in range(tensor.shape[0]):
-            channel_data = tensor[ch]
+            # Get channel data as numpy array
+            channel_data = tensor[ch].detach().cpu().numpy()
 
-            # Calculate L2 norm
-            norm = torch.sqrt(torch.sum(channel_data**2))
+            # Apply Numba-accelerated normalization
+            norm_data = _unit_length_normalize(channel_data, self.eps)
 
-            # Avoid division by zero
-            if norm > 0:
-                result[ch] = channel_data / (norm + self.eps)
-            else:
-                result[ch] = channel_data
+            # Convert back to tensor
+            result[ch] = torch.tensor(
+                norm_data, dtype=tensor.dtype, device=tensor.device
+            )
 
         return result
 
@@ -271,16 +349,16 @@ class MaxAmplitudeNormalizer(BaseNormalizer):
         result = torch.zeros_like(tensor)
 
         for ch in range(tensor.shape[0]):
-            channel_data = tensor[ch]
+            # Get channel data as numpy array
+            channel_data = tensor[ch].detach().cpu().numpy()
 
-            # Calculate max absolute value
-            max_abs = torch.max(torch.abs(channel_data))
+            # Apply Numba-accelerated normalization
+            norm_data = _max_amplitude_normalize(channel_data, self.scale, self.eps)
 
-            # Avoid division by zero
-            if max_abs > 0:
-                result[ch] = (channel_data / (max_abs + self.eps)) * self.scale
-            else:
-                result[ch] = channel_data
+            # Convert back to tensor
+            result[ch] = torch.tensor(
+                norm_data, dtype=tensor.dtype, device=tensor.device
+            )
 
         return result
 
@@ -350,7 +428,11 @@ class ReferenceNormalizer(BaseNormalizer):
         if self.reference_values is None:
             raise ValueError("Reference values not set. Call set_reference() first.")
 
-        # Handle single reference value
+        # For ReferenceNormalizer, the operations are simple enough that
+        # the overhead of converting to NumPy might outweigh benefits
+        # But we could optimize the per-channel case with Numba
+
+        # Handle single reference value - keep in PyTorch for simplicity
         if isinstance(self.reference_values, float):
             return tensor / (self.reference_values + self.eps)
 
@@ -371,9 +453,7 @@ class ReferenceNormalizer(BaseNormalizer):
             return tensor / (self.reference_values + self.eps)
 
 
-# Factory functions
-
-
+# Factory functions - unchanged
 @public_api
 def create_minmax_normalizer(
     target_min: float = 0.0, target_max: float = 1.0
