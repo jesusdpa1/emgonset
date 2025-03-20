@@ -23,7 +23,7 @@ from emgonset.processing.rectifiers import create_abs_rectifier
 from emgonset.processing.tkeo import create_tkeo2
 from emgonset.processing.transforms import EMGTransformCompose
 from emgonset.utils.io import create_emg_dataloader  # Corrected import
-from emgonset.vizualization.general_plots import plot_time_series
+from emgonset.visualization.general_plots import plot_time_series
 
 # %%
 base_dir = Path(r"E:/jpenalozaa")
@@ -90,26 +90,4 @@ a = plot_time_series(
     dark_mode=True,
     grid=True,
 )
-# %%
-# Create time vector in seconds
-time_ = np.linspace(0, segment.shape[1] / fs, segment.shape[1])
-
-# Create the plot
-plt.figure(figsize=(12, 6))
-
-# Plot both channels
-for i in range(segment.shape[0]):
-    plt.subplot(2, 1, i + 1)
-    plt.plot(time_, segment[i].numpy())
-    plt.title(f"EMG Channel {i}")
-    plt.xlabel("Time (s)")
-    plt.ylabel("Amplitude")
-    plt.grid(True)
-
-plt.tight_layout()
-plt.show()
-
-# If you want to zoom in on a specific region (e.g., first 0.2 seconds)
-plt.figure(figsize=(12, 6))
-
 # %%
