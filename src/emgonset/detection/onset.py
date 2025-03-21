@@ -4,7 +4,7 @@ Onset and offset detection algorithms for EMG signals using thresholding methods
 """
 
 from abc import ABC, abstractmethod
-from typing import List, Literal, NamedTuple, Optional, Tuple, Union
+from typing import List, NamedTuple, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -35,68 +35,23 @@ class BaseOnsetDetector(ABC):
     def __init__(
         self,
         min_duration_ms: float = 100.0,
-        norm: Optional[Literal["minmax", "zscore", "maxamp"]] = None,
     ):
         """
         Initialize onset detector
 
         Args:
             min_duration_ms: Minimum duration in milliseconds for a valid onset-offset pair
-            norm: Normalization method to apply before detection (None, "minmax", "zscore", "maxamp")
         """
         self.fs: Optional[float] = None
         self.is_initialized: bool = False
         self.min_duration_ms = min_duration_ms
         self.min_samples = None  # Will be calculated when fs is known
-        self.norm = norm
 
     def initialize(self, fs: float) -> None:
         """Initialize detector with sampling frequency"""
         self.fs = fs
         self.min_samples = int(self.min_duration_ms * fs / 1000)
         self.is_initialized = True
-
-    def _normalize_signal(self, signal: np.ndarray) -> np.ndarray:
-        """
-        Apply normalization to the signal if requested
-
-        Args:
-            signal: Input signal array
-
-        Returns:
-            Normalized signal (or original if no normalization requested)
-        """
-        if self.norm is None:
-            return signal
-
-        if self.norm == "minmax":
-            # Min-max normalization to [0, 1]
-            min_val = np.min(signal)
-            max_val = np.max(signal)
-            if max_val > min_val:
-                return (signal - min_val) / (max_val - min_val)
-            else:
-                return np.zeros_like(signal)
-
-        elif self.norm == "zscore":
-            # Z-score normalization
-            mean_val = np.mean(signal)
-            std_val = np.std(signal)
-            if std_val > 0:
-                return (signal - mean_val) / std_val
-            else:
-                return np.zeros_like(signal)
-
-        elif self.norm == "maxamp":
-            # Max amplitude normalization
-            max_abs = np.max(np.abs(signal))
-            if max_abs > 0:
-                return signal / max_abs
-            else:
-                return signal
-
-        # Default case - return original signal
-        return signal
 
     @abstractmethod
     def detect(self, signal: np.ndarray) -> OnsetOffsetResult:
@@ -134,9 +89,6 @@ class BaseOnsetDetector(ABC):
         if signal_np.ndim > 1:
             raise ValueError("Expected 1D signal for onset detection")
 
-        # Apply normalization if requested
-        signal_np = self._normalize_signal(signal_np)
-
         return self.detect(signal_np)
 
     def validate_pair(self, onset_idx: int, offset_idx: int) -> bool:
@@ -170,7 +122,6 @@ class FixedThresholdDetector(BaseOnsetDetector):
         threshold: float,
         min_duration_ms: float = 100.0,
         hysteresis: float = 0.0,
-        norm: Optional[Literal["minmax", "zscore", "maxamp"]] = None,
     ):
         """
         Initialize fixed threshold detector
@@ -179,9 +130,8 @@ class FixedThresholdDetector(BaseOnsetDetector):
             threshold: Fixed threshold value
             min_duration_ms: Minimum duration in ms for a valid onset-offset pair
             hysteresis: Optional hysteresis value to prevent rapid on/off switching
-            norm: Normalization method to apply before detection (None, "minmax", "zscore", "maxamp")
         """
-        super().__init__(min_duration_ms=min_duration_ms, norm=norm)
+        super().__init__(min_duration_ms=min_duration_ms)
         self.threshold = threshold
         self.hysteresis = hysteresis
 
@@ -284,7 +234,6 @@ class StandardDeviationThresholdDetector(BaseOnsetDetector):
         min_duration_ms: float = 100.0,
         hysteresis_factor: float = 0.0,
         baseline_region: Optional[Tuple[int, int]] = None,
-        norm: Optional[Literal["minmax", "zscore", "maxamp"]] = None,
     ):
         """
         Initialize standard deviation threshold detector
@@ -296,9 +245,8 @@ class StandardDeviationThresholdDetector(BaseOnsetDetector):
             hysteresis_factor: Hysteresis as a fraction of the threshold-baseline difference
             baseline_region: Optional explicit baseline region as (start, end) indices.
                             If provided, this overrides baseline_window_ms.
-            norm: Normalization method to apply before detection (None, "minmax", "zscore", "maxamp")
         """
-        super().__init__(min_duration_ms=min_duration_ms, norm=norm)
+        super().__init__(min_duration_ms=min_duration_ms)
         self.std_dev_factor = std_dev_factor
         self.baseline_window_ms = baseline_window_ms
         self.hysteresis_factor = hysteresis_factor
@@ -352,7 +300,7 @@ class StandardDeviationThresholdDetector(BaseOnsetDetector):
         )
         detector.initialize(self.fs)
 
-        # Detect onsets and offsets (normalization already applied to signal)
+        # Detect onsets and offsets
         fixed_detector_result = detector.detect(signal)
 
         # Return with additional baseline information
@@ -380,7 +328,6 @@ class AdaptiveThresholdDetector(BaseOnsetDetector):
         std_dev_factor: float = 3.0,
         min_duration_ms: float = 100.0,
         min_threshold: Optional[float] = None,
-        norm: Optional[Literal["minmax", "zscore", "maxamp"]] = None,
     ):
         """
         Initialize adaptive threshold detector
@@ -391,9 +338,8 @@ class AdaptiveThresholdDetector(BaseOnsetDetector):
             std_dev_factor: Number of standard deviations above background for threshold
             min_duration_ms: Minimum duration in ms for a valid onset-offset pair
             min_threshold: Optional minimum threshold value
-            norm: Normalization method to apply before detection (None, "minmax", "zscore", "maxamp")
         """
-        super().__init__(min_duration_ms=min_duration_ms, norm=norm)
+        super().__init__(min_duration_ms=min_duration_ms)
         self.background_window_ms = background_window_ms
         self.detection_window_ms = detection_window_ms
         self.std_dev_factor = std_dev_factor
@@ -515,7 +461,6 @@ def create_fixed_threshold_detector(
     threshold: float,
     min_duration_ms: float = 100.0,
     hysteresis: float = 0.0,
-    norm: Optional[Literal["minmax", "zscore", "maxamp"]] = None,
 ) -> FixedThresholdDetector:
     """
     Create a fixed threshold onset/offset detector
@@ -524,7 +469,6 @@ def create_fixed_threshold_detector(
         threshold: Fixed threshold value
         min_duration_ms: Minimum duration in ms for a valid onset-offset pair
         hysteresis: Optional hysteresis value
-        norm: Normalization method to apply before detection (None, "minmax", "zscore", "maxamp")
 
     Returns:
         Configured FixedThresholdDetector
@@ -533,7 +477,6 @@ def create_fixed_threshold_detector(
         threshold=threshold,
         min_duration_ms=min_duration_ms,
         hysteresis=hysteresis,
-        norm=norm,
     )
 
 
@@ -543,7 +486,6 @@ def create_std_threshold_detector(
     baseline_window_ms: float = 500.0,
     min_duration_ms: float = 100.0,
     hysteresis_factor: float = 0.0,
-    norm: Optional[Literal["minmax", "zscore", "maxamp"]] = None,
 ) -> StandardDeviationThresholdDetector:
     """
     Create a standard deviation based threshold detector
@@ -553,7 +495,6 @@ def create_std_threshold_detector(
         baseline_window_ms: Duration in ms for baseline calculation
         min_duration_ms: Minimum duration in ms for a valid onset-offset pair
         hysteresis_factor: Hysteresis as a fraction of threshold
-        norm: Normalization method to apply before detection (None, "minmax", "zscore", "maxamp")
 
     Returns:
         Configured StandardDeviationThresholdDetector
@@ -563,7 +504,6 @@ def create_std_threshold_detector(
         baseline_window_ms=baseline_window_ms,
         min_duration_ms=min_duration_ms,
         hysteresis_factor=hysteresis_factor,
-        norm=norm,
     )
 
 
@@ -574,7 +514,6 @@ def create_adaptive_threshold_detector(
     std_dev_factor: float = 3.0,
     min_duration_ms: float = 100.0,
     min_threshold: Optional[float] = None,
-    norm: Optional[Literal["minmax", "zscore", "maxamp"]] = None,
 ) -> AdaptiveThresholdDetector:
     """
     Create an adaptive threshold detector
@@ -585,7 +524,6 @@ def create_adaptive_threshold_detector(
         std_dev_factor: Number of standard deviations above background
         min_duration_ms: Minimum duration in ms for a valid onset-offset pair
         min_threshold: Optional minimum threshold value
-        norm: Normalization method to apply before detection (None, "minmax", "zscore", "maxamp")
 
     Returns:
         Configured AdaptiveThresholdDetector
@@ -596,5 +534,4 @@ def create_adaptive_threshold_detector(
         std_dev_factor=std_dev_factor,
         min_duration_ms=min_duration_ms,
         min_threshold=min_threshold,
-        norm=norm,
     )
