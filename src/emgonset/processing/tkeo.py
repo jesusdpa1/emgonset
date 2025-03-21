@@ -27,7 +27,7 @@ class BaseTKEO(ABC):
 
 
 # Define Numba accelerated functions for each TKEO variant
-@njit
+@njit(cache=True)
 def _tkeo_operation(signal):
     """Numba accelerated implementation of classic TKEO"""
     result = np.zeros_like(signal)
@@ -44,7 +44,7 @@ def _tkeo_operation(signal):
     return result
 
 
-@njit
+@njit(cache=True)
 def _tkeo2_operation(signal):
     """Numba accelerated implementation of TKEO2"""
     result = np.zeros_like(signal)
@@ -64,7 +64,7 @@ def _tkeo2_operation(signal):
     return result
 
 
-@njit
+@njit(cache=True)
 def _mtkeo_operation(signal, k1, k2, k3):
     """Numba accelerated implementation of MTKEO"""
     result = np.zeros_like(signal)

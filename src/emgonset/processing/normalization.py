@@ -15,7 +15,7 @@ from ..utils.internals import public_api
 
 
 # Numba-optimized normalization functions
-@njit
+@njit(cache=True)
 def _minmax_normalize(data, target_min, target_max):
     """Numba-accelerated min-max normalization"""
     result = np.zeros_like(data)
@@ -35,7 +35,7 @@ def _minmax_normalize(data, target_min, target_max):
     return result
 
 
-@njit
+@njit(cache=True)
 def _zscore_normalize(data, eps):
     """Numba-accelerated z-score normalization"""
     result = np.zeros_like(data)
@@ -52,7 +52,7 @@ def _zscore_normalize(data, eps):
     return result
 
 
-@njit
+@njit(cache=True)
 def _unit_length_normalize(data, eps):
     """Numba-accelerated unit length normalization"""
     result = np.zeros_like(data)
@@ -68,7 +68,7 @@ def _unit_length_normalize(data, eps):
     return result
 
 
-@njit
+@njit(cache=True)
 def _max_amplitude_normalize(data, scale, eps):
     """Numba-accelerated max amplitude normalization"""
     result = np.zeros_like(data)
@@ -96,7 +96,7 @@ def _robust_scale_normalize(data, eps):
     return _apply_robust_norm(data, median, iqr, eps)
 
 
-@njit
+@njit(cache=True)
 def _apply_robust_norm(data, median, iqr, eps):
     """Numba-accelerated part of robust normalization"""
     result = np.zeros_like(data)

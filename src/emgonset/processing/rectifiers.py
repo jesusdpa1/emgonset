@@ -8,13 +8,13 @@ from scipy import signal
 
 
 # Numba-optimized functions
-@njit
+@njit(cache=True)
 def _abs_rectify(x):
     """Numba-accelerated absolute value rectification"""
     return np.abs(x)
 
 
-@njit
+@njit(cache=True)
 def _square_rectify(x):
     """Numba-accelerated square rectification"""
     return np.square(x)
@@ -28,7 +28,7 @@ def _hilbert_transform(x):
     return analytic_signal
 
 
-@njit
+@njit(cache=True)
 def _compute_envelope(analytic_signal_real, analytic_signal_imag):
     """Numba-accelerated envelope calculation from analytic signal components"""
     # Manually compute absolute value of complex numbers
