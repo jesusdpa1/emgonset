@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Literal, Optional, Union
+from typing import Dict, Optional
 
 import numpy as np
 import torch
@@ -7,21 +7,14 @@ import torch
 from ..utils.internals import public_api
 from ..utils.padding import calculate_pad_length, mirror_pad_numpy, unpad_numpy
 from .filters import (
-    LowpassFilter,
     create_lowpass_filter,
 )
 from .rectifiers import (
-    AbsoluteValueRectifier,
-    HilbertRectifier,
-    SquareRectifier,
     create_abs_rectifier,
     create_hilbert_rectifier,
     create_square_rectifier,
 )
 from .tkeo import (
-    MTKEO,
-    TKEO,
-    TKEO2,
     create_mtkeo,
     create_tkeo,
     create_tkeo2,
@@ -63,7 +56,6 @@ class LowpassEnvelope(BaseEnvelope):
         rectification: str = "abs",
         cutoff_freq: float = 10.0,
         filter_order: int = 4,
-        normalize: bool = False,
         pad_time_ms: float = 100.0,
     ):
         """
@@ -73,14 +65,12 @@ class LowpassEnvelope(BaseEnvelope):
             rectification: Rectification method ('abs', 'square', 'hilbert')
             cutoff_freq: Cutoff frequency for lowpass filter in Hz
             filter_order: Order of the Butterworth filter
-            normalize: Whether to normalize the envelope to [0, 1]
             pad_time_ms: Padding time in milliseconds to reduce edge effects
         """
         super().__init__(pad_time_ms=pad_time_ms)
         self.rectification_type = rectification
         self.cutoff_freq = cutoff_freq
         self.filter_order = filter_order
-        self.normalize = normalize
 
         # Initialize components
         self._setup_components()
@@ -149,12 +139,6 @@ class LowpassEnvelope(BaseEnvelope):
             # Remove padding
             envelope = unpad_numpy(envelope, self.pad_length)
 
-            # Normalize if requested
-            if self.normalize:
-                max_val = np.max(envelope)
-                if max_val > 0:
-                    envelope = envelope / max_val
-
             # Convert back to tensor - use copy to ensure positive strides
             result[ch] = torch.tensor(np.copy(envelope), dtype=tensor.dtype)
 
@@ -176,7 +160,6 @@ class TKEOEnvelope(BaseEnvelope):
         rectification: Optional[str] = None,
         lowpass_cutoff: Optional[float] = None,
         filter_order: int = 4,
-        normalize: bool = False,
         tkeo_params: Optional[Dict] = None,
         pad_time_ms: float = 100.0,
     ):
@@ -188,7 +171,6 @@ class TKEOEnvelope(BaseEnvelope):
             rectification: Optional rectification method ('abs', 'square', 'hilbert', None)
             lowpass_cutoff: Optional cutoff frequency for lowpass filter in Hz (None for no filtering)
             filter_order: Order of the Butterworth filter if lowpass is used
-            normalize: Whether to normalize the envelope to [0, 1]
             tkeo_params: Additional parameters for TKEO (e.g., weights for MTKEO)
             pad_time_ms: Padding time in milliseconds to reduce edge effects
         """
@@ -197,7 +179,6 @@ class TKEOEnvelope(BaseEnvelope):
         self.rectification_type = rectification
         self.lowpass_cutoff = lowpass_cutoff
         self.filter_order = filter_order
-        self.normalize = normalize
         self.tkeo_params = tkeo_params or {}
 
         # Initialize components
@@ -325,12 +306,6 @@ class TKEOEnvelope(BaseEnvelope):
 
                 channel_result = unpad_torch(tkeo_result, self.pad_length)
 
-            # Normalize if requested
-            if self.normalize:
-                max_val = torch.max(channel_result)
-                if max_val > 0:
-                    channel_result = channel_result / max_val
-
             result_channels.append(channel_result)
 
         # Stack channels
@@ -345,7 +320,6 @@ def create_lowpass_envelope(
     rectification: str = "abs",
     cutoff_freq: float = 10.0,
     filter_order: int = 4,
-    normalize: bool = False,
     pad_time_ms: float = 100.0,
 ) -> LowpassEnvelope:
     """
@@ -355,7 +329,6 @@ def create_lowpass_envelope(
         rectification: Rectification method ('abs', 'square', 'hilbert')
         cutoff_freq: Cutoff frequency for lowpass filter in Hz
         filter_order: Order of the Butterworth filter
-        normalize: Whether to normalize the envelope to [0, 1]
         pad_time_ms: Padding time in milliseconds to reduce edge effects
 
     Returns:
@@ -365,7 +338,6 @@ def create_lowpass_envelope(
         rectification=rectification,
         cutoff_freq=cutoff_freq,
         filter_order=filter_order,
-        normalize=normalize,
         pad_time_ms=pad_time_ms,
     )
 
@@ -376,7 +348,6 @@ def create_tkeo_envelope(
     rectification: Optional[str] = None,
     lowpass_cutoff: Optional[float] = None,
     filter_order: int = 4,
-    normalize: bool = False,
     tkeo_params: Optional[Dict] = None,
     pad_time_ms: float = 100.0,
 ) -> TKEOEnvelope:
@@ -388,7 +359,6 @@ def create_tkeo_envelope(
         rectification: Optional rectification method ('abs', 'square', 'hilbert', None)
         lowpass_cutoff: Optional cutoff frequency for lowpass filter in Hz (None for no filtering)
         filter_order: Order of the Butterworth filter if lowpass is used
-        normalize: Whether to normalize the envelope to [0, 1]
         tkeo_params: Additional parameters for TKEO (e.g., weights for MTKEO)
         pad_time_ms: Padding time in milliseconds to reduce edge effects
 
@@ -400,7 +370,6 @@ def create_tkeo_envelope(
         rectification=rectification,
         lowpass_cutoff=lowpass_cutoff,
         filter_order=filter_order,
-        normalize=normalize,
         tkeo_params=tkeo_params,
         pad_time_ms=pad_time_ms,
     )
