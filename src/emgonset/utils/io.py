@@ -15,6 +15,7 @@ from tqdm.auto import tqdm
 from .internals import public_api
 
 
+@public_api
 class EMGTransformCompose:
     """
     Compose multiple EMG transforms together while properly handling initialization.
@@ -42,6 +43,167 @@ class EMGTransformCompose:
 
 
 @public_api
+class MaskData:
+    """Class for loading and accessing mask data from parquet files"""
+
+    def __init__(self, data_dir: Path):
+        self.data_dir = data_dir
+        self.parquet_path = None
+        self.metadata = None
+        self.data = None
+
+        # Locate parquet file and metadata
+        self._locate_files()
+
+        # Load metadata from the EMG data (mask uses the same parameters)
+        self._load_metadata()
+
+    def _locate_files(self):
+        """Locate the mask parquet file"""
+        # Find mask parquet file
+        parquet_files = list(self.data_dir.glob("mask*.parquet"))
+        if not parquet_files:
+            raise FileNotFoundError(f"No parquet files found in {self.data_dir}")
+
+        # For simplicity, use the first parquet file
+        self.parquet_path = parquet_files[0]
+
+        # Check for metadata.json (shared with EMG data)
+        self.metadata_path = self.data_dir / "metadata.json"
+        if not self.metadata_path.exists():
+            raise FileNotFoundError(f"Metadata file not found: {self.metadata_path}")
+
+    def _load_metadata(self):
+        """Load metadata from JSON file"""
+        with open(self.metadata_path, "r") as f:
+            self.metadata = json.load(f)
+
+        # Extract useful metadata
+        self.fs = self.metadata["base"]["fs"]
+        self.channel_names = self.metadata["base"]["channel_names"]
+        self.total_samples = self.metadata["base"]["number_of_samples"]
+        self.n_channels = self.metadata["base"]["channel_numbers"]
+
+    def load_data(self, force_reload: bool = False):
+        """Load mask data using PyArrow memory mapping"""
+        if self.data is not None and not force_reload:
+            return self.data
+
+        try:
+            with pa.memory_map(str(self.parquet_path), "r") as mmap:
+                table = pq.read_table(mmap)
+                self.data = table.to_pandas().values
+        except Exception as e:
+            raise RuntimeError(f"Failed to load mask data: {e}") from e
+
+        return self.data
+
+
+@public_api
+class MaskDataset(Dataset):
+    """PyTorch Dataset for mask data with windowing"""
+
+    def __init__(
+        self,
+        data_dir: str,
+        window_size_sec: float = 1.0,
+        window_stride_sec: float = 0.5,
+        channels: Optional[List[int]] = None,
+        preload: bool = False,
+        verbose: bool = True,
+    ):
+        """
+        Initialize the mask dataset
+
+        Args:
+            data_dir: Directory containing mask parquet files and metadata.json
+            window_size_sec: Window size in seconds
+            window_stride_sec: Window stride in seconds
+            channels: List of channel indices to load (None for all channels)
+            preload: Whether to preload all data into memory
+            verbose: Whether to display progress bars
+        """
+        self.verbose = verbose
+
+        # Initialize mask data loader
+        self.mask_data = MaskData(Path(data_dir))
+
+        # Calculate window sizes in samples
+        self.window_size = int(window_size_sec * self.mask_data.fs)
+        self.window_stride = int(window_stride_sec * self.mask_data.fs)
+
+        # Set channels to use
+        if channels is None:
+            self.channels = list(range(self.mask_data.n_channels))
+        else:
+            self.channels = channels
+
+        # Preload data if requested
+        if preload:
+            if verbose:
+                print("Preloading all mask data into memory...")
+            self.data = self.mask_data.load_data()
+        else:
+            self.data = None
+
+        # Calculate window indices
+        self._calculate_window_indices()
+
+    def _calculate_window_indices(self):
+        """Calculate indices for all possible windows based on stride"""
+        if self.verbose:
+            print(
+                f"Calculating window indices for {self.mask_data.total_samples} samples..."
+            )
+
+        self.window_indices = []
+
+        # Calculate how many windows we can extract
+        num_windows = max(
+            0,
+            (self.mask_data.total_samples - self.window_size) // self.window_stride + 1,
+        )
+
+        # Use tqdm for progress if verbose and we have many windows
+        iterator = range(num_windows)
+        if self.verbose and num_windows > 1000:
+            iterator = tqdm(iterator, desc="Calculating windows")
+
+        for i in iterator:
+            start_idx = i * self.window_stride
+            end_idx = start_idx + self.window_size
+            self.window_indices.append((start_idx, end_idx))
+
+        if self.verbose:
+            print(f"Created {len(self.window_indices)} windows")
+
+    def __len__(self) -> int:
+        """Return the number of windows in the dataset"""
+        return len(self.window_indices)
+
+    def __getitem__(self, idx: int) -> torch.Tensor:
+        """Get a specific window of mask data"""
+        # Get window indices
+        start_idx, end_idx = self.window_indices[idx]
+
+        # Get data
+        if self.data is None:
+            # Load data on-the-fly
+            with pa.memory_map(str(self.mask_data.parquet_path), "r") as mmap:
+                table = pq.read_table(mmap)
+                data = table.to_pandas().values
+                window_data = data[start_idx:end_idx, self.channels]
+        else:
+            # Use preloaded data
+            window_data = self.data[start_idx:end_idx, self.channels]
+
+        # Convert to tensor (transpose to get [channels, samples])
+        mask_tensor = torch.tensor(window_data, dtype=torch.float32).T
+
+        return mask_tensor
+
+
+@public_api
 class EMGData:
     """Class for loading and accessing EMG data from parquet files"""
 
@@ -60,7 +222,7 @@ class EMGData:
     def _locate_files(self):
         """Locate the parquet file and metadata.json"""
         # Find parquet files
-        parquet_files = list(self.data_dir.glob("*.parquet"))
+        parquet_files = list(self.data_dir.glob("data*.parquet"))
         if not parquet_files:
             raise FileNotFoundError(f"No parquet files found in {self.data_dir}")
 
@@ -265,3 +427,54 @@ def create_emg_dataloader(
     )
 
     return dataloader, dataset.emg_data.fs
+
+
+@public_api
+def create_mask_dataloader(
+    data_dir: str,
+    window_size_sec: float = 1.0,
+    window_stride_sec: float = 0.5,
+    batch_size: int = 32,
+    shuffle: bool = True,
+    num_workers: int = 4,
+    channels: Optional[List[int]] = None,
+    preload: bool = False,
+    verbose: bool = True,
+) -> Tuple[DataLoader, float]:
+    """
+    Create a DataLoader for mask data
+
+    Args:
+        data_dir: Directory containing mask parquet files and metadata.json
+        window_size_sec: Window size in seconds
+        window_stride_sec: Window stride in seconds
+        batch_size: Number of samples in each batch
+        shuffle: Whether to shuffle the data
+        num_workers: Number of worker processes for loading data
+        channels: List of channel indices to load (None for all channels)
+        preload: Whether to preload all data into memory
+        verbose: Whether to display progress bars
+
+    Returns:
+        dataloader: PyTorch DataLoader
+        fs: Sampling frequency from metadata
+    """
+    dataset = MaskDataset(
+        data_dir=data_dir,
+        window_size_sec=window_size_sec,
+        window_stride_sec=window_stride_sec,
+        channels=channels,
+        preload=preload,
+        verbose=verbose,
+    )
+
+    # Use standard DataLoader
+    dataloader = DataLoader(
+        dataset=dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        pin_memory=torch.cuda.is_available(),
+    )
+
+    return dataloader, dataset.mask_data.fs
