@@ -16,6 +16,33 @@ from .internals import public_api
 
 
 @public_api
+class EMGTransformCompose:
+    """
+    Compose multiple EMG transforms together while properly handling initialization.
+    Similar to torchvision.transforms.Compose but with initialize() support.
+    """
+
+    def __init__(self, transforms):
+        """
+        Args:
+            transforms: List of transforms to apply sequentially
+        """
+        self.transforms = transforms
+
+    def initialize(self, fs: float) -> None:
+        """Initialize all contained transforms with sampling frequency"""
+        for transform in self.transforms:
+            if hasattr(transform, "initialize"):
+                transform.initialize(fs)
+
+    def __call__(self, tensor):
+        """Apply all transforms sequentially"""
+        for transform in self.transforms:
+            tensor = transform(tensor)
+        return tensor
+
+
+@public_api
 class MaskData:
     """Class for loading and accessing mask data from parquet files"""
 
@@ -34,11 +61,12 @@ class MaskData:
     def _locate_files(self):
         """Locate the mask parquet file"""
         # Find mask parquet file
-        mask_path = self.data_dir / "mask.parquet"
-        if not mask_path.exists():
-            raise FileNotFoundError(f"Mask file not found: {mask_path}")
+        parquet_files = list(self.data_dir.glob("mask*.parquet"))
+        if not parquet_files:
+            raise FileNotFoundError(f"No parquet files found in {self.data_dir}")
 
-        self.parquet_path = mask_path
+        # For simplicity, use the first parquet file
+        self.parquet_path = parquet_files[0]
 
         # Check for metadata.json (shared with EMG data)
         self.metadata_path = self.data_dir / "metadata.json"
@@ -72,8 +100,8 @@ class MaskData:
 
 
 @public_api
-class EMGMaskDataset(Dataset):
-    """PyTorch Dataset for paired EMG and mask data with windowing"""
+class MaskDataset(Dataset):
+    """PyTorch Dataset for mask data with windowing"""
 
     def __init__(
         self,
@@ -82,60 +110,41 @@ class EMGMaskDataset(Dataset):
         window_stride_sec: float = 0.5,
         channels: Optional[List[int]] = None,
         preload: bool = False,
-        emg_transform=None,
         verbose: bool = True,
     ):
         """
-        Initialize the paired EMG and mask dataset
+        Initialize the mask dataset
 
         Args:
-            data_dir: Directory containing emg parquet files, mask.parquet, and metadata.json
+            data_dir: Directory containing mask parquet files and metadata.json
             window_size_sec: Window size in seconds
             window_stride_sec: Window stride in seconds
             channels: List of channel indices to load (None for all channels)
             preload: Whether to preload all data into memory
-            emg_transform: Optional transform to apply to the EMG data
             verbose: Whether to display progress bars
         """
         self.verbose = verbose
 
-        # Initialize EMG data loader
-        self.emg_data = EMGData(Path(data_dir))
-
         # Initialize mask data loader
         self.mask_data = MaskData(Path(data_dir))
 
-        # Check if EMG and mask data have the same dimensions
-        if self.emg_data.total_samples != self.mask_data.total_samples:
-            raise ValueError(
-                f"EMG data ({self.emg_data.total_samples} samples) and "
-                f"mask data ({self.mask_data.total_samples} samples) have different lengths"
-            )
-
-        # Initialize transform with fs if it has an initialize method
-        if emg_transform is not None and hasattr(emg_transform, "initialize"):
-            emg_transform.initialize(self.emg_data.fs)
-        self.emg_transform = emg_transform
-
         # Calculate window sizes in samples
-        self.window_size = int(window_size_sec * self.emg_data.fs)
-        self.window_stride = int(window_stride_sec * self.emg_data.fs)
+        self.window_size = int(window_size_sec * self.mask_data.fs)
+        self.window_stride = int(window_stride_sec * self.mask_data.fs)
 
         # Set channels to use
         if channels is None:
-            self.channels = list(range(self.emg_data.n_channels))
+            self.channels = list(range(self.mask_data.n_channels))
         else:
             self.channels = channels
 
         # Preload data if requested
         if preload:
             if verbose:
-                print("Preloading all data into memory...")
-            self.emg_data_array = self.emg_data.load_data()
-            self.mask_data_array = self.mask_data.load_data()
+                print("Preloading all mask data into memory...")
+            self.data = self.mask_data.load_data()
         else:
-            self.emg_data_array = None
-            self.mask_data_array = None
+            self.data = None
 
         # Calculate window indices
         self._calculate_window_indices()
@@ -144,7 +153,7 @@ class EMGMaskDataset(Dataset):
         """Calculate indices for all possible windows based on stride"""
         if self.verbose:
             print(
-                f"Calculating window indices for {self.emg_data.total_samples} samples..."
+                f"Calculating window indices for {self.mask_data.total_samples} samples..."
             )
 
         self.window_indices = []
@@ -152,7 +161,7 @@ class EMGMaskDataset(Dataset):
         # Calculate how many windows we can extract
         num_windows = max(
             0,
-            (self.emg_data.total_samples - self.window_size) // self.window_stride + 1,
+            (self.mask_data.total_samples - self.window_size) // self.window_stride + 1,
         )
 
         # Use tqdm for progress if verbose and we have many windows
@@ -172,80 +181,26 @@ class EMGMaskDataset(Dataset):
         """Return the number of windows in the dataset"""
         return len(self.window_indices)
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Get a specific window of EMG data and corresponding mask
-
-        Returns:
-            Tuple of (emg_data, mask_data) as torch tensors
-        """
+    def __getitem__(self, idx: int) -> torch.Tensor:
+        """Get a specific window of mask data"""
         # Get window indices
         start_idx, end_idx = self.window_indices[idx]
 
-        # Get EMG data
-        if self.emg_data_array is None:
-            # Load EMG data on-the-fly
-            with pa.memory_map(str(self.emg_data.parquet_path), "r") as mmap:
-                table = pq.read_table(mmap)
-                emg_data = table.to_pandas().values
-                window_emg = emg_data[start_idx:end_idx, self.channels]
-        else:
-            # Use preloaded EMG data
-            window_emg = self.emg_data_array[start_idx:end_idx, self.channels]
-
-        # Get mask data
-        if self.mask_data_array is None:
-            # Load mask data on-the-fly
+        # Get data
+        if self.data is None:
+            # Load data on-the-fly
             with pa.memory_map(str(self.mask_data.parquet_path), "r") as mmap:
                 table = pq.read_table(mmap)
-                mask_data = table.to_pandas().values
-                window_mask = mask_data[start_idx:end_idx]
+                data = table.to_pandas().values
+                window_data = data[start_idx:end_idx, self.channels]
         else:
-            # Use preloaded mask data
-            window_mask = self.mask_data_array[start_idx:end_idx]
+            # Use preloaded data
+            window_data = self.data[start_idx:end_idx, self.channels]
 
-        # Convert to tensors (transpose EMG to get [channels, samples])
-        emg_tensor = torch.tensor(window_emg, dtype=torch.float32).T
+        # Convert to tensor (transpose to get [channels, samples])
+        mask_tensor = torch.tensor(window_data, dtype=torch.float32).T
 
-        # For mask data, ensure it's binary and correct shape
-        mask_tensor = torch.tensor(window_mask, dtype=torch.float32)
-
-        # If mask is 2D, take the first channel (assuming single-channel masks)
-        if len(mask_tensor.shape) > 1 and mask_tensor.shape[1] > 1:
-            mask_tensor = mask_tensor[:, 0]
-
-        # Apply transform to EMG data if provided
-        if self.emg_transform is not None:
-            emg_tensor = self.emg_transform(emg_tensor)
-
-        return emg_tensor, mask_tensor
-
-
-@public_api
-class EMGTransformCompose:
-    """
-    Compose multiple EMG transforms together while properly handling initialization.
-    Similar to torchvision.transforms.Compose but with initialize() support.
-    """
-
-    def __init__(self, transforms):
-        """
-        Args:
-            transforms: List of transforms to apply sequentially
-        """
-        self.transforms = transforms
-
-    def initialize(self, fs: float) -> None:
-        """Initialize all contained transforms with sampling frequency"""
-        for transform in self.transforms:
-            if hasattr(transform, "initialize"):
-                transform.initialize(fs)
-
-    def __call__(self, tensor):
-        """Apply all transforms sequentially"""
-        for transform in self.transforms:
-            tensor = transform(tensor)
-        return tensor
+        return mask_tensor
 
 
 @public_api
@@ -267,7 +222,7 @@ class EMGData:
     def _locate_files(self):
         """Locate the parquet file and metadata.json"""
         # Find parquet files
-        parquet_files = list(self.data_dir.glob("*.parquet"))
+        parquet_files = list(self.data_dir.glob("data*.parquet"))
         if not parquet_files:
             raise FileNotFoundError(f"No parquet files found in {self.data_dir}")
 
@@ -475,7 +430,7 @@ def create_emg_dataloader(
 
 
 @public_api
-def create_emg_mask_dataloader(
+def create_mask_dataloader(
     data_dir: str,
     window_size_sec: float = 1.0,
     window_stride_sec: float = 0.5,
@@ -484,14 +439,13 @@ def create_emg_mask_dataloader(
     num_workers: int = 4,
     channels: Optional[List[int]] = None,
     preload: bool = False,
-    emg_transform=None,
     verbose: bool = True,
-) -> Tuple[torch.utils.data.DataLoader, float]:
+) -> Tuple[DataLoader, float]:
     """
-    Create a DataLoader for paired EMG and mask data
+    Create a DataLoader for mask data
 
     Args:
-        data_dir: Directory containing emg parquet files, mask.parquet, and metadata.json
+        data_dir: Directory containing mask parquet files and metadata.json
         window_size_sec: Window size in seconds
         window_stride_sec: Window stride in seconds
         batch_size: Number of samples in each batch
@@ -499,24 +453,23 @@ def create_emg_mask_dataloader(
         num_workers: Number of worker processes for loading data
         channels: List of channel indices to load (None for all channels)
         preload: Whether to preload all data into memory
-        emg_transform: Optional transform to apply to the EMG data
         verbose: Whether to display progress bars
 
     Returns:
         dataloader: PyTorch DataLoader
         fs: Sampling frequency from metadata
     """
-    dataset = EMGMaskDataset(
+    dataset = MaskDataset(
         data_dir=data_dir,
         window_size_sec=window_size_sec,
         window_stride_sec=window_stride_sec,
         channels=channels,
         preload=preload,
-        emg_transform=emg_transform,
         verbose=verbose,
     )
 
-    dataloader = torch.utils.data.DataLoader(
+    # Use standard DataLoader
+    dataloader = DataLoader(
         dataset=dataset,
         batch_size=batch_size,
         shuffle=shuffle,
@@ -524,4 +477,4 @@ def create_emg_mask_dataloader(
         pin_memory=torch.cuda.is_available(),
     )
 
-    return dataloader, dataset.emg_data.fs
+    return dataloader, dataset.mask_data.fs

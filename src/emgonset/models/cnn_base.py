@@ -9,6 +9,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchaudio.transforms as T
 
+from ..utils.internals import public_api
+
 
 class STFTLayer(nn.Module):
     """
@@ -92,10 +94,7 @@ class EMGOnsetCNN(nn.Module):
         # Convolutional decoder to maintain temporal dimension
         self.conv_decoder = nn.Conv2d(16, 1, kernel_size=3, padding=1)
 
-        # Upsampling to original time resolution
-        self.upsample = nn.Upsample(scale_factor=(1, 1), mode="nearest")
-
-        # Final 1D convolution for time-domain output
+        # Final 1D convolution to combine frequency information
         self.final_conv = nn.Conv1d(n_freq_bins, 1, kernel_size=3, padding=1)
 
     def forward(self, x):
@@ -111,11 +110,14 @@ class EMGOnsetCNN(nn.Module):
         batch_size, channels, time = x.size()
 
         # Apply STFT to get time-frequency representation
-        x = self.stft_layer(x)
+        x = self.stft_layer(x)  # [batch_size, channels, freq_bins, time_frames]
 
         # Reshape if multi-channel
         if channels > 1:
             x = x.view(batch_size * channels, 1, x.size(2), x.size(3))
+        else:
+            # For single channel, just add a channel dimension
+            x = x.view(batch_size, 1, x.size(2), x.size(3))
 
         # CNN feature extraction
         x = F.relu(self.bn1(self.conv1(x)))
@@ -124,22 +126,19 @@ class EMGOnsetCNN(nn.Module):
         x = F.relu(self.bn3(self.conv3(x)))
 
         # Decode to single-channel time series
-        x = self.conv_decoder(x)
+        x = self.conv_decoder(x)  # [batch_size, 1, freq_bins, time_frames]
 
-        # Reshape back if multi-channel
-        if channels > 1:
-            x = x.view(batch_size, channels, x.size(2), x.size(3))
+        # Remove the channel dimension
+        x = x.squeeze(1)  # [batch_size, freq_bins, time_frames]
 
-        # Prepare for conversion back to time domain
-        x = x.squeeze(1)  # Remove channel dimension
+        # Transpose to put time as the last dimension
+        x = x.transpose(1, 2)  # [batch_size, time_frames, freq_bins]
 
-        # Apply 1D convolution across frequency bins to get time domain output
-        x = x.permute(0, 2, 1)  # [batch_size, time_frames, freq_bins]
-        x = self.final_conv(x)  # [batch_size, 1, time_frames]
+        # Apply 1D convolution across frequency bins
+        x = self.final_conv(x.transpose(1, 2))  # [batch_size, 1, time_frames]
 
         # Interpolate to original time dimension
-        target_length = time
-        x = F.interpolate(x, size=target_length, mode="linear", align_corners=False)
+        x = F.interpolate(x, size=time, mode="linear", align_corners=False)
 
         # Apply sigmoid to get binary probabilities
         x = torch.sigmoid(x)
@@ -147,6 +146,7 @@ class EMGOnsetCNN(nn.Module):
         return x
 
 
+@public_api
 class DiceLoss(nn.Module):
     """
     Dice loss for binary segmentation
@@ -185,6 +185,7 @@ class DiceLoss(nn.Module):
         return 1.0 - dice
 
 
+@public_api
 class FocalLoss(nn.Module):
     """
     Focal loss for imbalanced binary classification
@@ -235,6 +236,117 @@ class FocalLoss(nn.Module):
             return loss
 
 
+class ImprovedEMGOnsetCNN(nn.Module):
+    """
+    CNN model for EMG onset detection with improved dimension handling
+    """
+
+    def __init__(self, n_fft=256, hop_length=64, dropout_rate=0.2):
+        super().__init__()
+
+        # STFT parameters
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+
+        # STFT layer
+        self.stft_layer = STFTLayer(n_fft=n_fft, hop_length=hop_length)
+
+        # Calculate frequency bins
+        n_freq_bins = n_fft // 2 + 1
+
+        # CNN layers
+        self.conv1 = nn.Conv2d(1, 16, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(16)
+        self.conv2 = nn.Conv2d(16, 32, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(32)
+        self.conv3 = nn.Conv2d(32, 16, kernel_size=3, padding=1)
+        self.bn3 = nn.BatchNorm2d(16)
+
+        # Dropout for regularization
+        self.dropout = nn.Dropout(dropout_rate)
+
+        # Convolutional decoder to maintain temporal dimension
+        self.conv_decoder = nn.Conv2d(16, 1, kernel_size=3, padding=1)
+
+        # Final 1D convolution to combine frequency information
+        self.final_conv = nn.Conv1d(n_freq_bins, 1, kernel_size=3, padding=1)
+
+    def forward(self, x):
+        """
+        Forward pass with robust dimension handling
+
+        Args:
+            x: Input tensor of shape [batch_size, channels, time]
+
+        Returns:
+            Output tensor of shape [batch_size, 1, time]
+        """
+        batch_size, channels, time = x.size()
+
+        # Remember original length for final interpolation
+        original_length = time
+
+        # Apply STFT to get time-frequency representation
+        x = self.stft_layer(x)  # [batch_size, channels, freq_bins, time_frames]
+
+        # Reshape if multi-channel
+        if channels > 1:
+            x = x.view(batch_size * channels, 1, x.size(2), x.size(3))
+        else:
+            # For single channel, just add a channel dimension
+            x = x.view(batch_size, 1, x.size(2), x.size(3))
+
+        # CNN feature extraction
+        x = F.relu(self.bn1(self.conv1(x)))
+        x = F.relu(self.bn2(self.conv2(x)))
+        x = self.dropout(x)
+        x = F.relu(self.bn3(self.conv3(x)))
+
+        # Decode to single-channel time series
+        x = self.conv_decoder(x)  # [batch_size, 1, freq_bins, time_frames]
+
+        # Remove the channel dimension
+        x = x.squeeze(1)  # [batch_size, freq_bins, time_frames]
+
+        # Transpose to put time as the last dimension
+        x = x.transpose(1, 2)  # [batch_size, time_frames, freq_bins]
+
+        # Apply 1D convolution across frequency bins
+        x = self.final_conv(x.transpose(1, 2))  # [batch_size, 1, time_frames]
+
+        # Ensure we interpolate back to the original length
+        x = F.interpolate(x, size=original_length, mode="linear", align_corners=False)
+
+        # Apply sigmoid to get binary probabilities
+        x = torch.sigmoid(x)
+
+        return x
+
+
+@public_api
+# Create the improved model factory function
+def create_improved_emg_onset_model(n_fft=256, hop_length=64, dropout_rate=0.2):
+    """
+    Factory function to create the improved EMG onset detection model
+    """
+    model = ImprovedEMGOnsetCNN(
+        n_fft=n_fft, hop_length=hop_length, dropout_rate=dropout_rate
+    )
+
+    # Initialize weights using He initialization
+    for m in model.modules():
+        if isinstance(m, nn.Conv2d) or isinstance(m, nn.Conv1d):
+            nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.BatchNorm2d) or isinstance(m, nn.BatchNorm1d):
+            nn.init.constant_(m.weight, 1)
+            nn.init.constant_(m.bias, 0)
+
+    return model
+
+
+@public_api
 def create_emg_onset_model(n_fft=256, hop_length=64, dropout_rate=0.2):
     """
     Factory function to create EMG onset detection model
