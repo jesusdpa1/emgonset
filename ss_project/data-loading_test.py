@@ -14,6 +14,7 @@ from scipy import signal
 from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
 
+from emgonset.processing.filters import create_bandpass_filter, create_notch_filter
 from emgonset.processing.rectifiers import create_abs_rectifier
 from emgonset.processing.tkeo import create_tkeo2
 from emgonset.processing.transforms import EMGTransformCompose
@@ -37,16 +38,37 @@ emg_path = data_path.joinpath(r"RawG.ant")
 ref_ = EMGData(reference_channel_path)
 emg_ = EMGData(emg_path)
 # %%
-fs_ref = ref_.fs
-fs_emg = emg_.fs
-print(f"ref_fs: {fs_ref}, emg_fs: {fs_emg}")
+ref_fs = ref_.fs
+emg_fs = emg_.fs
+print(f"ref_fs: {ref_fs}, emg_fs: {emg_fs}")
 ref_data = ref_.load_data()
 emg_data = emg_.load_data()
 # %%
 print(f"{ref_data.shape}")
 print(f"{emg_data.shape}")
 # %%
-img_ref = plot_multi_channel_data(ref_data, time_window=[0, 1], fs=fs_emg)
+img_ref = plot_multi_channel_data(ref_data, time_window=[0, 1], fs=ref_fs)
+
 # %%
-img_emg = img = plot_multi_channel_data(emg_data, time_window=[0, 1], fs=fs_emg)
+img_emg = img = plot_multi_channel_data(emg_data, time_window=[0, 1], fs=emg_fs)
+
+# %%
+notch_filter = create_notch_filter(60)
+notch_filter.initialize(emg_fs)
+bp_filter = create_bandpass_filter(20, 2000)
+bp_filter.initialize(emg_fs)
+# %%
+# filter notch
+notch_ref = notch_filter(ref_data)
+bp_ref = bp_filter(notch_ref)
+
+# filter bandpass
+notch_emg = notch_filter(emg_data)
+bp_emg = bp_filter(notch_emg)
+
+# %%
+img_ref_filtered = plot_multi_channel_data(bp_ref, time_window=[0, 1], fs=ref_fs)
+
+img_emg_filtered = plot_multi_channel_data(bp_emg, time_window=[0, 1], fs=emg_fs)
+
 # %%
